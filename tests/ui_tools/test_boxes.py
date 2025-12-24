@@ -70,6 +70,7 @@ class TestWriteBox:
         write_box.model.user_group_names = [
             groups["name"] for groups in user_groups_fixture
         ]
+        write_box.model.try_send_widget_command.return_value = None
 
         write_box.view.pinned_streams = []
         write_box.view.unpinned_streams = sorted(

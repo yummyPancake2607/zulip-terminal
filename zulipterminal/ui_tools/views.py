@@ -1375,6 +1375,70 @@ class PopUpConfirmationView(urwid.Overlay):
         return super().keypress(size, key)
 
 
+class PopUpInputView(urwid.Overlay):
+    def __init__(
+        self,
+        controller: Any,
+        prompt_text: str,
+        on_submit: Callable[[str], None],
+        default_text: str = "",
+        location: PopUpConfirmationViewLocation = "center",
+    ) -> None:
+        self.controller = controller
+        self.on_submit = on_submit
+
+        # Build input form: prompt + edit + buttons
+        prompt = urwid.Text(("bold", prompt_text), "center")
+        self.edit = urwid.Edit(edit_text=default_text)
+        ok = urwid.Button("OK", self._ok_clicked)
+        cancel = urwid.Button("Cancel", self._cancel_clicked)
+        ok._w = urwid.AttrMap(urwid.SelectableIcon("OK", 3), None, "selected")
+        cancel._w = urwid.AttrMap(urwid.SelectableIcon("Cancel", 6), None, "selected")
+        buttons = urwid.GridFlow([ok, cancel], 7, 5, 1, "center")
+
+        widgets = [prompt, urwid.Divider(), self.edit, urwid.Divider(), buttons]
+        form = urwid.LineBox(urwid.ListBox(urwid.SimpleFocusListWalker(widgets)))
+
+        if location == "top-left":
+            align = "left"
+            valign = "top"
+            width = LEFT_WIDTH + 1
+            height = 8
+        else:
+            align = "center"
+            valign = "middle"
+
+            max_cols, max_rows = controller.maximum_popup_dimensions()
+            # +2 to compensate for the LineBox characters.
+            width = min(max_cols, max(len(prompt_text) + 4, 40))
+            height = min(max_rows, sum(widget.rows((width,)) for widget in widgets)) + 2
+
+        urwid.Overlay.__init__(
+            self,
+            form,
+            self.controller.view,
+            align=align,
+            valign=valign,
+            width=width,
+            height=height,
+        )
+
+    def _ok_clicked(self, button: Any) -> None:
+        text = self.edit.edit_text.strip()
+        if text:
+            self.on_submit(text)
+        self.controller.exit_popup()
+
+    def _cancel_clicked(self, button: Any) -> None:
+        self.controller.exit_popup()
+
+    def keypress(self, size: urwid_Size, key: str) -> str:
+        if is_command_key("EXIT_POPUP", key):
+            self.controller.exit_popup()
+            return ""
+        return super().keypress(size, key)
+
+
 class StreamInfoView(PopUpView):
     def __init__(self, controller: Any, stream_id: int) -> None:
         self.stream_id = stream_id

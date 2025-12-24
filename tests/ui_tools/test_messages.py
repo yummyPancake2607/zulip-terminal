@@ -1,3 +1,4 @@
+import json
 from collections import OrderedDict, defaultdict
 from datetime import date
 from unittest.mock import patch
@@ -761,6 +762,124 @@ class TestMessageBox:
             },
         }
         MessageBox(message, self.model, last_message)
+
+    def test_main_view_renders_todo_widget_from_submessages(self, mocker):
+        self.model.stream_dict = {
+            5: {
+                "color": "#bd6",
+            },
+        }
+
+        submessages = [
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps(
+                    {
+                        "widget_type": "todo",
+                        "extra_data": {
+                            "task_list_title": "Today",
+                            "tasks": [
+                                {"task": "Task A", "desc": ""},
+                                {"task": "Task B", "desc": "Details"},
+                            ],
+                        },
+                    }
+                ),
+            },
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps({"type": "strike", "key": "0,canned"}),
+            },
+        ]
+
+        message = {
+            "id": 4,
+            "type": "stream",
+            "display_recipient": "Verona",
+            "stream_id": 5,
+            "subject": "Test topic",
+            "flags": ["read"],
+            "is_me_message": False,
+            "content": "<p>original</p>",
+            "reactions": [],
+            "sender_full_name": "Alice",
+            "sender_email": "alice@zulip.com",
+            "sender_id": 1,
+            "timestamp": 1532103879,
+            "submessages": submessages,
+        }
+
+        msg_box = MessageBox(message, self.model, message)
+        msg_box.main_view()
+
+        assert "To-do" in msg_box.message["content"]
+        assert "Today" in msg_box.message["content"]
+        assert "[✔]" in msg_box.message["content"]
+        assert "Task B" in msg_box.message["content"]
+        assert "Details" in msg_box.message["content"]
+
+    def test_main_view_renders_poll_widget_from_submessages(self, mocker):
+        self.model.stream_dict = {
+            5: {
+                "color": "#bd6",
+            },
+        }
+
+        submessages = [
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps(
+                    {
+                        "widget_type": "poll",
+                        "extra_data": {
+                            "question": "",
+                            "options": ["Pizza", "Salad"],
+                        },
+                    }
+                ),
+            },
+            {
+                "msg_type": "widget",
+                "sender_id": 2,
+                "content": json.dumps({"type": "vote", "key": "canned,0", "vote": 1}),
+            },
+            {
+                "msg_type": "widget",
+                "sender_id": 2,
+                "content": json.dumps(
+                    {"type": "new_option", "idx": 0, "option": "Pasta"}
+                ),
+            },
+        ]
+
+        message = {
+            "id": 4,
+            "type": "stream",
+            "display_recipient": "Verona",
+            "stream_id": 5,
+            "subject": "Test topic",
+            "flags": ["read"],
+            "is_me_message": False,
+            "content": "<p>original</p>",
+            "reactions": [],
+            "sender_full_name": "Alice",
+            "sender_email": "alice@zulip.com",
+            "sender_id": 1,
+            "timestamp": 1532103879,
+            "submessages": submessages,
+        }
+
+        msg_box = MessageBox(message, self.model, message)
+        msg_box.main_view()
+
+        assert "Poll" in msg_box.message["content"]
+        assert "No poll question is provided" in msg_box.message["content"]
+        assert "Pizza" in msg_box.message["content"]
+        assert "Salad" in msg_box.message["content"]
+        assert "Pasta" in msg_box.message["content"]
 
     @pytest.mark.parametrize(
         "message",

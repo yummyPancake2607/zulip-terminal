@@ -767,11 +767,21 @@ class WriteBox(urwid.Pile):
 
                     success = self.model.update_stream_message(**args)
                 else:
-                    success = self.model.send_stream_message(
+                    widget_result = self.model.try_send_widget_command(
+                        is_stream=True,
                         stream=self.stream_write_box.edit_text,
                         topic=topic,
+                        recipients=None,
                         content=self.msg_write_box.edit_text,
                     )
+                    if widget_result is not None:
+                        success = widget_result
+                    else:
+                        success = self.model.send_stream_message(
+                            stream=self.stream_write_box.edit_text,
+                            topic=topic,
+                            content=self.msg_write_box.edit_text,
+                        )
             else:
                 if self.msg_edit_state is not None:
                     success = self.model.update_private_message(
@@ -786,10 +796,20 @@ class WriteBox(urwid.Pile):
                         return key
                     self.update_recipients(self.to_write_box)
                     if self.recipient_user_ids:
-                        success = self.model.send_private_message(
+                        widget_result = self.model.try_send_widget_command(
+                            is_stream=False,
+                            stream=None,
+                            topic=None,
                             recipients=self.recipient_user_ids,
                             content=self.msg_write_box.edit_text,
                         )
+                        if widget_result is not None:
+                            success = widget_result
+                        else:
+                            success = self.model.send_private_message(
+                                recipients=self.recipient_user_ids,
+                                content=self.msg_write_box.edit_text,
+                            )
                     else:
                         self.view.controller.report_error(
                             ["Cannot send message without specifying recipients."]

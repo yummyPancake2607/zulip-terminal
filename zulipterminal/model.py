@@ -11,7 +11,6 @@ from copy import deepcopy
 from datetime import datetime
 from typing import (
     Any,
-    Callable,
     DefaultDict,
     Dict,
     FrozenSet,
@@ -59,7 +58,6 @@ from zulipterminal.api_types import (
     UpdateMessageContentEvent,
     UpdateMessagesLocationEvent,
 )
-from zulipterminal.config.keys import primary_display_key_for_command
 from zulipterminal.config.symbols import STREAM_TOPIC_SEPARATOR
 from zulipterminal.config.ui_mappings import EDIT_TOPIC_POLICY, ROLE_BY_ID, STATE_ICON
 from zulipterminal.helper import (
@@ -149,7 +147,7 @@ class Model:
         ]
 
         # Events desired with their corresponding callback
-        self.event_actions: Dict[str, Callable[[Event], None]] = {
+        self.event_actions = {
             "message": self._handle_message_event,
             "update_message": self._handle_update_message_event,
             "reaction": self._handle_reaction_event,
@@ -157,7 +155,9 @@ class Model:
             "subscription": self._handle_subscription_event,
             "typing": self._handle_typing_event,
             "update_message_flags": self._handle_update_message_flags_event,
-            "update_global_notifications": self._handle_update_global_notifications_event,  # noqa: E501
+            "update_global_notifications": (
+                self._handle_update_global_notifications_event
+            ),
             "update_display_settings": self._handle_update_display_settings_event,
             "user_settings": self._handle_user_settings_event,
             "realm_emoji": self._handle_update_emoji_event,
@@ -233,18 +233,27 @@ class Model:
             send_private_typing_notifications=(
                 True
                 if user_settings is None
-                else user_settings["send_private_typing_notifications"]
+                else user_settings.get(
+                    "send_private_typing_notifications",
+                    self.initial_data.get("send_private_typing_notifications", True),
+                )
             ),  # ZFL 105, Zulip 5.0
             # these settings were removed from the top-level object in ZFL 439 (v12.0)
             twenty_four_hour_time=(
-                self.initial_data["twenty_four_hour_time"]
+                self.initial_data.get("twenty_four_hour_time", False)
                 if user_settings is None
-                else user_settings["twenty_four_hour_time"]
+                else user_settings.get(
+                    "twenty_four_hour_time",
+                    self.initial_data.get("twenty_four_hour_time", False),
+                )
             ),
             pm_content_in_desktop_notifications=(
-                self.initial_data["pm_content_in_desktop_notifications"]
+                self.initial_data.get("pm_content_in_desktop_notifications", False)
                 if user_settings is None
-                else user_settings["pm_content_in_desktop_notifications"]
+                else user_settings.get(
+                    "pm_content_in_desktop_notifications",
+                    self.initial_data.get("pm_content_in_desktop_notifications", False),
+                )
             ),
         )
 
@@ -558,6 +567,281 @@ class Model:
             return message_was_sent
         else:
             raise RuntimeError("Empty recipients list.")
+
+    def _send_widget_submessage(
+        self, message_id: int, *, content: Dict[str, Any]
+    ) -> bool:
+        """
+        Send a widget submessage (used by poll/todo widgets).
+        """
+        request = {
+            "message_id": message_id,
+            "msg_type": "widget",
+            "content": json.dumps(content),
+        }
+
+        # Debug: Log what we're about to send
+        self.controller.report_success(
+            f"DEBUG SENDING: POST /api/v1/submessage with content: "
+            f"{json.dumps(content)}"
+        )
+
+        # Zulip REST endpoint:  POST /api/v1/submessage
+        response = self.client.do_api_query(
+            request,
+            "/api/v1/submessage",
+            method="POST",
+        )
+
+        # Debug: Log the response
+        result = response.get("result", "NO RESULT")
+        msg = response.get("msg", "NO MSG")
+        self.controller.report_success(f"DEBUG RESPONSE: {result} - {msg}")
+
+        if response.get("result") != "success":
+            msg = response.get("msg", "Unexpected error from the server")
+            code = response.get("code", "?")
+            self.controller.report_error(f"Submessage error ({code}): {msg}")
+            return False
+
+        display_error_if_present(response, self.controller)
+        return True
+
+    def send_widget_submessage(self, message_id: int, content: Dict[str, Any]) -> bool:
+        return self._send_widget_submessage(message_id, content=content)
+
+    def todo_toggle(self, message_id: int, payload: Dict[str, Any]) -> bool:
+        return self._send_widget_submessage(message_id, content=payload)
+
+    def todotoggletask(self, messageid: int, taskid: str) -> bool:
+        # Backward/forward compatible name used by UI widget handler.
+        payload = {"type": "strike", "key": taskid}
+        return self._send_widget_submessage(messageid, content=payload)
+
+    def todo_rename_title(self, message_id: int, payload: Dict[str, Any]) -> bool:
+        # optional: enforce "only my todo list"
+        msg = self.index["messages"].get(message_id)
+        if msg and msg.get("sender_id") != self.user_id:
+            self.controller.report_error("Only the creator can rename this to-do list.")
+            return False
+        return self._send_widget_submessage(message_id, content=payload)
+
+    def todo_add_task(self, message_id: int, payload: Dict[str, Any]) -> bool:
+        msg = self.index["messages"].get(message_id)
+        if msg and msg.get("sender_id") != self.user_id:
+            self.controller.report_error(
+                "Only the creator can add tasks to this to-do list."
+            )
+            return False
+        return self._send_widget_submessage(message_id, content=payload)
+
+    def todo_toggle_task(self, message_id: int, task_id: str) -> bool:
+        payload = {"type": "strike", "key": task_id}
+        return self._send_widget_submessage(message_id, content=payload)
+
+    def poll_vote(self, message_id: int, option_key: str, vote: int) -> bool:
+        # vote must be +1 (vote) or -1 (unvote)
+        if vote not in (1, -1):
+            self.controller.report_error("Invalid vote delta; must be 1 or -1.")
+            return False
+
+        payload = {
+            "type": "vote",
+            "key": option_key,  # e.g. "canned,0" or "12345,1"
+            "vote": vote,  # 1 or -1
+        }
+        return self.send_widget_submessage(message_id, content=payload)
+
+    def _format_poll_message(self, question: str, options: List[str]) -> str:
+        lines = [f"/poll {question}"]
+        lines.extend(options)
+        return "\n".join(lines)
+
+    def _format_todo_message(self, title: str, tasks: List[str]) -> str:
+        lines = [f"/todo {title}"]
+        lines.extend(tasks)
+        return "\n".join(lines)
+
+    def _build_todo_widget_payload(
+        self, title: str, tasks: List[str]
+    ) -> Dict[str, Any]:
+        """Build the initial todo widget payload structure."""
+        return {
+            "widget_type": "todo",
+            "extra_data": {
+                "task_list_title": title,
+                "tasks": [{"task": task, "desc": ""} for task in tasks],
+            },
+        }
+
+    def _build_poll_widget_payload(
+        self, question: str, options: List[str]
+    ) -> Dict[str, Any]:
+        """Build the initial poll widget payload structure."""
+        return {
+            "widget_type": "poll",
+            "extra_data": {
+                "question": question,
+                "options": options,
+            },
+        }
+
+    def _parse_widget_command(
+        self, content: str
+    ) -> Optional[Tuple[str, Dict[str, Any]]]:
+        stripped = content.strip()
+        if not stripped.startswith("/"):
+            return None
+
+        if stripped.startswith("/todo"):
+            payload = stripped[len("/todo") :].strip()
+            parts = [part.strip() for part in payload.split("|") if part.strip()]
+            if not parts:
+                self.controller.report_error(
+                    ["Use /todo <title> | <task1> | <task2> …"]
+                )
+                return None
+            title, *tasks = parts
+            if not tasks:
+                self.controller.report_error(
+                    [
+                        "Add at least one task: /todo <title> | <task1> | <task2> …",
+                    ]
+                )
+                return None
+            widget_payload = self._build_todo_widget_payload(title=title, tasks=tasks)
+            return ("todo", widget_payload)
+
+        if stripped.startswith("/poll"):
+            payload = stripped[len("/poll") :].strip()
+            parts = [part.strip() for part in payload.split("|") if part.strip()]
+            if len(parts) < 3:
+                self.controller.report_error(
+                    ["Use /poll <question> | <option1> | <option2> …"]
+                )
+                return None
+            question, *options = parts
+            widget_payload = self._build_poll_widget_payload(
+                question=question, options=options
+            )
+            return ("poll", widget_payload)
+
+        return None
+
+    def _send_poll_setup(
+        self, message_id: int, *, question: str, options: List[str]
+    ) -> bool:
+        # Send question + options individually (webapp-compatible sequence)
+        ok = self._send_widget_submessage(
+            message_id, content={"type": "question", "question": question}
+        )
+        if not ok:
+            self.controller.report_error(["Failed to set poll question."])
+            return False
+        for idx, option in enumerate(options):
+            sent = self._send_widget_submessage(
+                message_id,
+                content={"type": "new_option", "idx": idx, "option": option},
+            )
+            if not sent:
+                self.controller.report_error([f"Failed to add option: {option}"])
+                return False
+        self.controller.report_success(["Poll options added."])
+        return True
+
+    def _send_todo_setup(
+        self, message_id: int, *, title: str, tasks: List[str]
+    ) -> bool:
+        ok = self._send_widget_submessage(
+            message_id,
+            content={"type": "new_task_list_title", "title": title or "Task list"},
+        )
+        if not ok:
+            self.controller.report_error(["Failed to set todo title."])
+            return False
+        for idx, task in enumerate(tasks):
+            sent = self._send_widget_submessage(
+                message_id,
+                content={"type": "new_task", "key": idx, "task": task, "desc": ""},
+            )
+            if not sent:
+                self.controller.report_error([f"Failed to add task: {task}"])
+                return False
+        self.controller.report_success(["Todo tasks added."])
+        return True
+
+    def _send_widget_message(
+        self,
+        *,
+        composition: Composition,
+        widget_payload: Dict[str, Any],
+    ) -> bool:
+        response = self.client.send_message(composition)
+        display_error_if_present(response, self.controller)
+        if response.get("result") != "success":
+            return False
+
+        message_id = response.get("id")
+        if message_id is None:
+            self.controller.report_error(["Widget message sent but no id returned."])
+            return False
+
+        # Send combined payload as the initial widget submessage
+        return self._send_widget_submessage(message_id, content=widget_payload)
+
+    def try_send_widget_command(
+        self,
+        *,
+        is_stream: bool,
+        stream: Optional[str],
+        topic: Optional[str],
+        recipients: Optional[List[int]],
+        content: str,
+    ) -> Optional[bool]:
+        """
+        Intercept /todo and /poll commands typed in the compose box.
+
+        Returns:
+            None -> not a widget command; caller should send normally
+            True/False -> command was handled; indicates success
+        """
+
+        parsed = self._parse_widget_command(content)
+        if parsed is None:
+            return None
+
+        widget_type, widget_payload = parsed
+        if is_stream:
+            if stream is None or topic is None:
+                self.controller.report_error(
+                    [
+                        "Stream and topic are required for widget commands.",
+                    ]
+                )
+                return False
+            composition: Composition = StreamComposition(
+                type="stream",
+                to=stream,
+                subject=topic,
+                content=f"/{widget_type}",
+                read_by_sender=True,
+            )
+        else:
+            if not recipients:
+                self.controller.report_error(
+                    ["Specify recipients before sending a widget command."]
+                )
+                return False
+            composition = PrivateComposition(
+                type="private",
+                to=recipients,
+                content=f"/{widget_type}",
+                read_by_sender=True,
+            )
+
+        return self._send_widget_message(
+            composition=composition, widget_payload=widget_payload
+        )
 
     def send_stream_message(self, stream: str, topic: str, content: str) -> bool:
         composition = StreamComposition(
@@ -1675,83 +1959,53 @@ class Model:
 
     def _handle_message_event(self, event: Event) -> None:
         """
-        Handle new messages (eg. add message to the end of the view)
+        Handle incoming new message event
         """
         assert event["type"] == "message"
-        message = self.modernize_message_response(event["message"])
-        # sometimes `flags` are missing in `event` so initialize
-        # an empty list of flags in that case.
+        message = event["message"]
+
+        # Use the event's flags to determine message state
+        # (event flags override any existing message flags)
         message["flags"] = event.get("flags", [])
-        # We need to update the topic order in index, unconditionally.
+
+        # Modernize the message response format
+        message = self.modernize_message_response(message)
+
+        # Index the new message
+        self.index = index_messages([message], self, self.index)
+
+        # Update topic index if it's a stream message
         if message["type"] == "stream":
-            # NOTE: The subsequent helper only updates the topic index based
-            # on the message event not the UI (the UI is updated in a
-            # consecutive block independently). However, it is critical to keep
-            # the topics index synchronized as it used whenever the topics list
-            # view is reconstructed later.
             self._update_topic_index(message["stream_id"], message["subject"])
-            # If the topic view is toggled for incoming message's
-            # recipient stream, then we re-arrange topic buttons
-            # with most recent at the top.
-            if hasattr(self.controller, "view"):
-                view = self.controller.view
-                if view.left_panel.is_in_topic_view_with_stream_id(
-                    message["stream_id"]
-                ):
-                    view.topic_w.update_topics_list(
-                        message["stream_id"], message["subject"], message["sender_id"]
-                    )
+
+        # Check if we should add it to rendered view
+        # Only do this if we have messages and the narrow matches
+        if (
+            self._have_last_message.get(repr(self.narrow), False)
+            and self.current_narrow_contains_message(message)
+            and hasattr(self.controller, "view")
+        ):
+            view = self.controller.view
+            if hasattr(view, "message_view"):
+                # Get last message if log exists
+                last_message = None
+                if view.message_view.log:
+                    last_message = view.message_view.log[-1].original_widget.message
+
+                # Create message widget and add to view
+                msg_w_list = create_msg_box_list(
+                    self, [message["id"]], last_message=last_message
+                )
+                if msg_w_list:
+                    view.message_view.log.extend(msg_w_list)
                     self.controller.update_screen()
 
-        # We can notify user regardless of whether UI is rendered or not,
-        # but depend upon the UI to indicate failures.
-        failed_command = self.notify_user(message)
-        if (
-            failed_command
-            and hasattr(self.controller, "view")
-            and not self._notified_user_of_notification_failure
-        ):
-            notice_template = (
-                "You have enabled notifications, but your notification "
-                "command '{}' could not be found."
-                "\n\n"
-                "The application will continue attempting to run this command "
-                "in this session, but will not notify you again."
-                "\n\n"
-                "Press '{}' to close this window."
-            )
-            notice = notice_template.format(
-                failed_command, primary_display_key_for_command("EXIT_POPUP")
-            )
-            self.controller.show_popup_with_message(notice, width=50)
-            self.controller.update_screen()
-            self._notified_user_of_notification_failure = True
-
-        # Index messages before calling set_count.
-        self.index = index_messages([message], self, self.index)
-        if "read" not in message["flags"]:
+        # Update unread counts if message is unread
+        if "read" not in message.get("flags", []):
             set_count([message["id"]], self.controller, 1)
 
-        if hasattr(self.controller, "view") and self._have_last_message.get(
-            repr(self.narrow), False
-        ):
-            msg_log = self.controller.view.message_view.log
-            if msg_log:
-                last_message = msg_log[-1].original_widget.message
-            else:
-                last_message = None
-            msg_w_list = create_msg_box_list(
-                self, [message["id"]], last_message=last_message
-            )
-            if not msg_w_list:
-                return
-            else:
-                msg_w = msg_w_list[0]
-
-            if self.current_narrow_contains_message(message):
-                msg_log.append(msg_w)
-
-            self.controller.update_screen()
+        # Notify user of new message
+        self.notify_user(message)
 
     def _update_topic_index(self, stream_id: int, topic_name: str) -> None:
         """
@@ -1884,83 +2138,42 @@ class Model:
             self._update_rendered_view(message_id)
 
     def _handle_submessage_event(self, event: Event) -> None:
-        """
-        Handle change to submessages on a message (todo, poll etc.)
-        """
         assert event["type"] == "submessage"
-        message_id = event["message_id"]
-        if message_id in self.index["messages"]:
-            message = self.index["messages"][message_id]
-            message["submessages"].append(
-                {
-                    "type": event["type"],
-                    "msg_type": event["msg_type"],
-                    "message_id": event["message_id"],
-                    "submessage_id": event["submessage_id"],
-                    "sender_id": event["sender_id"],
-                    "content": event["content"],
-                }
-            )
-            self.index["messages"][message_id] = message
-            self._update_rendered_view(message_id)
 
-    def _handle_update_message_flags_event(self, event: Event) -> None:
-        """
-        Handle change to message flags (eg. starred, read)
-        """
-        assert event["type"] == "update_message_flags"
-        if self.server_feature_level < 32:
-            operation = event["operation"]
-        else:
-            operation = event["op"]
-
-        if event["all"]:  # FIXME Should handle eventually
+        message_id = event.get("message_id")
+        if message_id is None or message_id not in self.index["messages"]:
             return
 
-        flag_to_change = event["flag"]
-        if flag_to_change not in {"starred", "read"}:
-            return
+        # Accept different event schemas
+        msg_type = event.get("msg_type") or event.get("msgtype") or event.get("msgType")
 
-        if flag_to_change == "read" and operation == "remove":
-            return
+        self.controller.report_success(
+            f"SUBMESSAGE HANDLER CALLED: keys={sorted(event.keys())}"
+        )
+        self.controller.report_success(f"SUBMESSAGE RAW: {event}")
 
-        indexed_message_ids = set(self.index["messages"])
-        message_ids_to_mark = set(event["messages"])
-
-        for message_id in message_ids_to_mark & indexed_message_ids:
-            msg = self.index["messages"][message_id]
-            if operation == "add":
-                if flag_to_change not in msg["flags"]:
-                    msg["flags"].append(flag_to_change)
-                if flag_to_change == "starred":
-                    self.index["starred_msg_ids"].add(message_id)
-            elif operation == "remove":
-                if flag_to_change in msg["flags"]:
-                    msg["flags"].remove(flag_to_change)
-                if (
-                    message_id in self.index["starred_msg_ids"]
-                    and flag_to_change == "starred"
-                ):
-                    self.index["starred_msg_ids"].remove(message_id)
-            else:
-                raise RuntimeError(event, msg["flags"])
-
-            self.index["messages"][message_id] = msg
-            self._update_rendered_view(message_id)
-
-        if operation == "add" and flag_to_change == "read":
-            set_count(
-                list(message_ids_to_mark & indexed_message_ids), self.controller, -1
+        if msg_type == "widget":
+            self.controller.report_success(
+                "DEBUG widget submessage content: "
+                + json.dumps(event.get("content"), sort_keys=True)
             )
 
-        if flag_to_change == "starred" and operation in ["add", "remove"]:
-            # update starred count in view
-            len_ids = len(message_ids_to_mark)
-            count = -len_ids if operation == "remove" else len_ids
-            self.controller.view.starred_button.update_count(
-                self.controller.view.starred_button.count + count
-            )
-            self.controller.update_screen()
+        message = self.index["messages"][message_id]
+        message.setdefault("submessages", [])
+
+        message["submessages"].append(
+            {
+                "type": event.get("type"),
+                "msg_type": msg_type,  # store normalized key
+                "message_id": message_id,
+                "submessage_id": event.get("submessage_id"),
+                "sender_id": event.get("sender_id"),
+                "content": event.get("content"),
+            }
+        )
+
+        self.index["messages"][message_id] = message
+        self._update_rendered_view(message_id)
 
     def formatted_local_time(
         self, timestamp: int, *, show_seconds: bool, show_year: bool = False
@@ -2045,6 +2258,76 @@ class Model:
                     self.controller.update_screen()
                     return
 
+    def _handle_update_message_flags_event(self, event: Event) -> None:
+        """
+        Handle change to message flags (eg. starred, read)
+        """
+        # Type narrow to UpdateMessageFlagsEvent
+        from zulipterminal.api_types import UpdateMessageFlagsEvent
+
+        assert event.get("type") == "update_message_flags"
+        flag_event = cast(UpdateMessageFlagsEvent, event)
+
+        # Support both 'op' (feature level 32+) and 'operation' (older versions)
+        if self.server_feature_level < 32:
+            operation = flag_event["operation"]
+        else:
+            operation = flag_event["op"]
+
+        if flag_event["all"]:  # FIXME Should handle eventually
+            return
+
+        flag_to_change = flag_event["flag"]
+        if flag_to_change not in {"starred", "read"}:
+            return
+
+        if flag_to_change == "read" and operation == "remove":
+            return
+
+        indexed_message_ids = set(self.index["messages"])
+        message_ids_to_mark = set(flag_event["messages"])
+
+        for message_id in message_ids_to_mark & indexed_message_ids:
+            msg = self.index["messages"][message_id]
+            if operation == "add":
+                if flag_to_change not in msg["flags"]:
+                    msg["flags"].append(flag_to_change)
+                if flag_to_change == "starred":
+                    self.index["starred_msg_ids"].add(message_id)
+            elif operation == "remove":
+                if flag_to_change in msg["flags"]:
+                    msg["flags"].remove(flag_to_change)
+                if (
+                    message_id in self.index["starred_msg_ids"]
+                    and flag_to_change == "starred"
+                ):
+                    self.index["starred_msg_ids"].remove(message_id)
+            else:
+                raise RuntimeError(event, msg["flags"])
+
+            self.index["messages"][message_id] = msg
+
+            # Update rendered view for starred changes or read additions
+            if flag_to_change == "starred" or (
+                flag_to_change == "read" and operation == "add"
+            ):
+                self._update_rendered_view(message_id)
+
+        # Decrease unread count when marking messages as read
+        if operation == "add" and flag_to_change == "read":
+            set_count(
+                list(message_ids_to_mark & indexed_message_ids), self.controller, -1
+            )
+
+        # Update starred count in view
+        if flag_to_change == "starred" and operation in ["add", "remove"]:
+            len_ids = len(message_ids_to_mark)
+            count = -len_ids if operation == "remove" else len_ids
+            self.controller.view.starred_button.update_count(
+                self.controller.view.starred_button.count + count
+            )
+            self.controller.update_screen()
+
     def _handle_user_settings_event(self, event: Event) -> None:
         """
         Event when user settings have changed - from ZFL 89, v5.0
@@ -2113,8 +2396,9 @@ class Model:
                     break
 
     def _register_desired_events(self, *, fetch_data: bool = False) -> str:
+        event_types = list(self.event_actions.keys())
+
         fetch_types = None if not fetch_data else self.initial_data_to_fetch
-        event_types = list(self.event_actions)
         try:
             response = self.client.register(
                 event_types=event_types,
@@ -2128,8 +2412,6 @@ class Model:
 
         if response["result"] == "success":
             if fetch_data:
-                # FIXME: Improve methods to avoid updating `realm_users` on
-                # every cycle. Add support for `realm_users` events too.
                 self.initial_data.update(response)
             self.max_message_id = response["max_message_id"]
             self.queue_id = response["queue_id"]
@@ -2160,7 +2442,7 @@ class Model:
                     # Our event queue went away, probably because
                     # we were asleep or the server restarted
                     # abnormally.  We may have missed some
-                    # events while the network was down or
+                    # events while the network were down or
                     # something, but there's not really anything
                     # we can do about it other than resuming
                     # getting new ones.

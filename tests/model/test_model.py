@@ -3370,6 +3370,218 @@ class TestModel:
 
         assert model.index["messages"][id]["submessages"] == expected_updated_submessage
 
+    def test__parse_widget_command_todo(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+
+        result = model._parse_widget_command("/todo Title | Task 1 | Task 2")
+
+        assert result == (
+            "todo",
+            {
+                "widget_type": "todo",
+                "extra_data": {
+                    "task_list_title": "Title",
+                    "tasks": [
+                        {"task": "Task 1", "desc": ""},
+                        {"task": "Task 2", "desc": ""},
+                    ],
+                },
+            },
+        )
+        model.controller.report_error.assert_not_called()
+
+    def test__parse_widget_command_todo_missing_tasks(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+
+        result = model._parse_widget_command("/todo Title")
+
+        assert result is None
+        model.controller.report_error.assert_called_once_with(
+            ["Add at least one task: /todo <title> | <task1> | <task2> …"]
+        )
+
+    def test__parse_widget_command_poll(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+
+        result = model._parse_widget_command("/poll Lunch? | Pizza | Pasta | Salad")
+
+        assert result == (
+            "poll",
+            {
+                "widget_type": "poll",
+                "extra_data": {
+                    "question": "Lunch?",
+                    "options": ["Pizza", "Pasta", "Salad"],
+                },
+            },
+        )
+        model.controller.report_error.assert_not_called()
+
+    def test__parse_widget_command_poll_missing_options(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+
+        result = model._parse_widget_command("/poll Lunch? | Pizza")
+
+        assert result is None
+        model.controller.report_error.assert_called_once_with(
+            ["Use /poll <question> | <option1> | <option2> …"]
+        )
+
+    def test_try_send_widget_command_stream(self, mocker, model):
+        model._parse_widget_command = mocker.Mock(
+            return_value=("todo", {"payload": "value"})
+        )
+        send_widget_message = mocker.patch.object(
+            model, "_send_widget_message", return_value=True
+        )
+
+        result = model.try_send_widget_command(
+            is_stream=True,
+            stream="general",
+            topic="topic",
+            recipients=None,
+            content="/todo Some tasks",
+        )
+
+        assert result is True
+        model._parse_widget_command.assert_called_once_with("/todo Some tasks")
+        send_widget_message.assert_called_once_with(
+            composition={
+                "type": "stream",
+                "to": "general",
+                "subject": "topic",
+                "content": "/todo",
+                "read_by_sender": True,
+            },
+            widget_payload={"payload": "value"},
+        )
+
+    def test_try_send_widget_command_private_requires_recipients(self, mocker, model):
+        model._parse_widget_command = mocker.Mock(return_value=("poll", {}))
+        model.controller.report_error = mocker.Mock()
+
+        result = model.try_send_widget_command(
+            is_stream=False,
+            stream=None,
+            topic=None,
+            recipients=[],
+            content="/poll Question | Y | N",
+        )
+
+        assert result is False
+        model.controller.report_error.assert_called_once_with(
+            ["Specify recipients before sending a widget command."]
+        )
+
+    def test_try_send_widget_command_non_widget(self, mocker, model):
+        model._parse_widget_command = mocker.Mock(return_value=None)
+
+        result = model.try_send_widget_command(
+            is_stream=True,
+            stream="general",
+            topic="topic",
+            recipients=None,
+            content="hello",
+        )
+
+        assert result is None
+
+    def test__send_widget_message_success(self, mocker, model):
+        composition = {
+            "type": "stream",
+            "to": "general",
+            "subject": "topic",
+            "content": "/todo",
+            "read_by_sender": True,
+        }
+        widget_payload = {"widget_type": "todo"}
+        model.client.send_message.return_value = {"result": "success", "id": 5}
+        send_widget_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", return_value=True
+        )
+
+        result = model._send_widget_message(
+            composition=composition, widget_payload=widget_payload
+        )
+
+        assert result is True
+        model.client.send_message.assert_called_once_with(composition)
+        send_widget_submessage.assert_called_once_with(5, content=widget_payload)
+
+    def test__send_widget_message_missing_id(self, mocker, model):
+        composition = {
+            "type": "stream",
+            "to": "general",
+            "subject": "topic",
+            "content": "/todo",
+            "read_by_sender": True,
+        }
+        widget_payload = {"widget_type": "todo"}
+        model.client.send_message.return_value = {"result": "success"}
+        model.controller.report_error = mocker.Mock()
+
+        result = model._send_widget_message(
+            composition=composition, widget_payload=widget_payload
+        )
+
+        assert result is False
+        model.client.send_message.assert_called_once_with(composition)
+        model.controller.report_error.assert_called_once_with(
+            ["Widget message sent but no id returned."]
+        )
+
+    def test__send_poll_setup(self, mocker, model):
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", return_value=True
+        )
+        model.controller.report_success = mocker.Mock()
+
+        result = model._send_poll_setup(
+            10, question="Lunch?", options=["Pizza", "Salad"]
+        )
+
+        assert result is True
+        assert send_submessage.call_count == 3
+        model.controller.report_success.assert_called_once_with(["Poll options added."])
+
+    def test__send_poll_setup_failure(self, mocker, model):
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", side_effect=[True, False]
+        )
+        model.controller.report_error = mocker.Mock()
+
+        result = model._send_poll_setup(10, question="Lunch?", options=["Pizza"])
+
+        assert result is False
+        assert send_submessage.call_count == 2
+        model.controller.report_error.assert_called_once_with(
+            ["Failed to add option: Pizza"]
+        )
+
+    def test__send_todo_setup(self, mocker, model):
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", return_value=True
+        )
+        model.controller.report_success = mocker.Mock()
+
+        result = model._send_todo_setup(3, title="Today", tasks=["a", "b"])
+
+        assert result is True
+        assert send_submessage.call_count == 3
+        model.controller.report_success.assert_called_once_with(["Todo tasks added."])
+
+    def test__send_todo_setup_failure(self, mocker, model):
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", side_effect=[True, False]
+        )
+        model.controller.report_error = mocker.Mock()
+
+        result = model._send_todo_setup(3, title="Today", tasks=["a"])
+
+        assert result is False
+        assert send_submessage.call_count == 2
+        model.controller.report_error.assert_called_once_with(["Failed to add task: a"])
+
     @pytest.fixture(
         params=[
             ("op", 32),  # At server feature level 32, event uses standard field

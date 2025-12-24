@@ -965,6 +965,94 @@ class MessageBox(urwid.Pile):
         return super().mouse_event(size, event, button, col, row, focus)
 
     def keypress(self, size: urwid_Size, key: str) -> Optional[str]:
+        # --- Widget actions (poll/todo) ---
+        submessages = self.message.get("submessages")
+        _widget_type = find_widget_type(submessages) if submessages else None
+
+        # Poll widget: 1..9 vote, Shift+1..9 unvote
+        if _widget_type == "poll":
+            assert submessages is not None  # Guaranteed by find_widget_type
+            _q, poll_options = process_poll_widget(submessages)
+            if poll_options:
+                if key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                    idx = int(key) - 1
+                    delta = 1
+                elif key in ("!", "@", "#", "$", "%", "^", "&", "*", "("):
+                    idx = ("!", "@", "#", "$", "%", "^", "&", "*", "(").index(key)
+                    delta = -1
+                else:
+                    return super().keypress(size, key)
+
+                option_keys = list(poll_options.keys())
+                if 0 <= idx < len(option_keys):
+                    option_key = option_keys[idx]
+                    self.model.poll_vote(self.message["id"], option_key, delta)
+                    return None
+
+            return super().keypress(size, key)
+
+        # Todo widget
+        if _widget_type == "todo":
+            assert submessages is not None  # Guaranteed by find_widget_type
+            _title, tasks = process_todo_widget(submessages)
+
+            # 1..9 toggles tasks
+            if tasks and key in ("1", "2", "3", "4", "5", "6", "7", "8", "9"):
+                idx = int(key) - 1
+                task_ids = list(tasks.keys())
+                if 0 <= idx < len(task_ids):
+                    task_id = task_ids[idx]
+                    self.model.todotoggletask(self.message["id"], task_id)
+                    return None
+                return super().keypress(size, key)
+
+            # t: open popup to rename title
+            if key == "t":
+                # Lazy import to avoid circular import at module load time
+                from zulipterminal.ui_tools.views import PopUpInputView
+
+                def submit_title(new_title: str) -> None:
+                    payload = {"type": "new_task_list_title", "title": new_title}
+                    self.model.todo_rename_title(self.message["id"], payload)
+
+                assert submessages is not None  # Guaranteed by _widget_type
+                current_title, _tasks = process_todo_widget(submessages)
+                popup = PopUpInputView(
+                    self.model.controller,
+                    prompt_text="New title:",
+                    on_submit=submit_title,
+                    default_text=current_title or "",
+                )
+                self.model.controller.loop.widget = popup
+                return None
+
+            # a: open popup to add a new task
+            if key == "a":
+                # Lazy import to avoid circular import at module load time
+                from zulipterminal.ui_tools.views import PopUpInputView
+
+                def submit_task(task_text: str) -> None:
+                    next_key = len(tasks) if tasks else 0
+                    payload = {
+                        "type": "new_task",
+                        "key": next_key,
+                        "task": task_text,
+                        "desc": "",
+                        "completed": False,
+                    }
+                    self.model.todo_add_task(self.message["id"], payload)
+
+                popup = PopUpInputView(
+                    self.model.controller,
+                    prompt_text="New task:",
+                    on_submit=submit_task,
+                    default_text="",
+                )
+                self.model.controller.loop.widget = popup
+                return None
+
+            return super().keypress(size, key)
+
         if is_command_key("REPLY_MESSAGE", key):
             if self.message["type"] == "private":
                 self.model.controller.view.write_box.private_box_view(
@@ -1019,6 +1107,7 @@ class MessageBox(urwid.Pile):
                         topic_name=self.topic_name,
                         contextual_message_id=self.message["id"],
                     )
+
         elif is_command_key("TOPIC_NARROW", key):
             if self.message["type"] == "private":
                 self.model.controller.narrow_to_user(

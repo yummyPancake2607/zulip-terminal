@@ -31,6 +31,7 @@ def process_todo_widget(
     title = ""
     tasks = {}
 
+    # First pass: Build the initial task list and handle structure events
     for entry in todo_list:
         content = entry.get("content")
         sender_id = entry.get("sender_id")
@@ -47,7 +48,8 @@ def process_todo_widget(
                         title = "Task list"
                     # Process initial tasks
                     for i, task in enumerate(widget["extra_data"].get("tasks", [])):
-                        # Initial tasks get  ID as "index,canned"
+                        # Initial tasks get ID as "i,canned"
+                        # (index first, then "canned")
                         task_id = f"{i},canned"
                         tasks[task_id] = {
                             "task": task["task"],
@@ -64,14 +66,22 @@ def process_todo_widget(
                     "completed": False,
                 }
 
-            elif widget.get("type") == "strike":
+            elif widget.get("type") == "new_task_list_title":
+                title = widget["title"]
+
+    # Second pass: Apply state changes (strike events, etc.)
+    for entry in todo_list:
+        content = entry.get("content")
+        msg_type = entry.get("msg_type")
+
+        if msg_type == "widget" and isinstance(content, str):
+            widget = json.loads(content)
+
+            if widget.get("type") == "strike":
                 # Strike event - toggle task completion state
                 task_id = widget["key"]
                 if task_id in tasks:
                     tasks[task_id]["completed"] = not tasks[task_id]["completed"]
-
-            elif widget.get("type") == "new_task_list_title":
-                title = widget["title"]
 
     return title, tasks
 
