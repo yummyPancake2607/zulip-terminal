@@ -235,10 +235,10 @@ class Model:
                 if user_settings is None
                 else user_settings["send_private_typing_notifications"]
             ),  # ZFL 105, Zulip 5.0
-            twenty_four_hour_time=self.initial_data["twenty_four_hour_time"],
-            pm_content_in_desktop_notifications=self.initial_data[
-                "pm_content_in_desktop_notifications"
-            ],
+            twenty_four_hour_time=self.initial_data.get("twenty_four_hour_time", False),
+            pm_content_in_desktop_notifications=self.initial_data.get(
+                "pm_content_in_desktop_notifications", False
+            ),
         )
 
         self.new_user_input = True
