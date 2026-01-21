@@ -319,8 +319,10 @@ def test_main_multiple_autohide_options(
     assert str(e.value) == "2"
 
     captured = capsys.readouterr()
-    lines = captured.err.strip("\n")
-    lines = lines.split("pytest: ", 1)[1]
+    # Extract the final argparse error line without assuming the program name
+    # (it can be "pytest", "python", etc. depending on how tests are invoked).
+    error_line = captured.err.strip("\n").splitlines()[-1]
+    lines = error_line.split(": ", 1)[1]
     expected = f"error: argument {options[1]}: not allowed with argument {options[0]}"
     assert lines == expected
 
@@ -356,8 +358,10 @@ def test_main_multiple_notify_options(
     assert str(e.value) == "2"
 
     captured = capsys.readouterr()
-    lines = captured.err.strip("\n")
-    lines = lines.split("pytest: ", 1)[1]
+    # Extract the final argparse error line without assuming the program name
+    # (it can be "pytest", "python", etc. depending on how tests are invoked).
+    error_line = captured.err.strip("\n").splitlines()[-1]
+    lines = error_line.split(": ", 1)[1]
     expected = f"error: argument {options[1]}: not allowed with argument {options[0]}"
     assert lines == expected
 

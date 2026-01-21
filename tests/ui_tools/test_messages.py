@@ -1016,7 +1016,7 @@ class TestMessageBox:
             assert msg_box.keypress((80,), "t") is None
             assert controller.loop.widget is popup_obj
 
-            kwargs = PopUpInputView.call_args.kwargs
+            _args, kwargs = PopUpInputView.call_args
             assert kwargs["prompt_text"] == "New title:"
             assert kwargs["default_text"] == "Today"
 
@@ -1078,7 +1078,7 @@ class TestMessageBox:
             assert msg_box.keypress((80,), "a") is None
             assert controller.loop.widget is popup_obj
 
-            kwargs = PopUpInputView.call_args.kwargs
+            _args, kwargs = PopUpInputView.call_args
             assert kwargs["prompt_text"] == "New task:"
             assert kwargs["default_text"] == ""
 
