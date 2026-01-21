@@ -1892,8 +1892,7 @@ class TestMessageBox:
                  ("{} A\n"
                   "{} {} {} B\n"
                   "{} {} {} C\n"),
-                 id="quoted level 1-3",
-                 marks=pytest.mark.xfail(reason="rendered_bug")),
+                 id="quoted level 1-3"),
             case("""<blockquote>
                         <p><a href="https://chat.zulip.org/1">czo</a></p>
                         <blockquote>
@@ -1914,8 +1913,7 @@ class TestMessageBox:
                   "{} {} C\n"
                   "{} D\n"
                   "{} E\n"),
-                 id="quoted with links level 1-3-1",
-                 marks=pytest.mark.xfail(reason="rendered_bug")),
+                 id="quoted with links level 1-3-1"),
             # fmt: on
         ],
     )

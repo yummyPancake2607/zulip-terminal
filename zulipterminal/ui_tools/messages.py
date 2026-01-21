@@ -894,7 +894,121 @@ class MessageBox(urwid.Pile):
             metadata["bq_len"] = cls.indent_quoted_content(soup, QUOTED_TEXT_MARKER)
 
         markup, message_links, time_mentions = cls.soup2markup(body, metadata)
+
+        # Some deeply nested quote patterns can produce redundant newline-only
+        # nodes from the HTML formatter, which shows up as spurious blank lines.
+        # Normalize only for these edge-cases to avoid altering established
+        # rendering expectations.
+        if isinstance(body, Tag) and body.find(name="blockquote"):
+            blockquotes = body.find_all(name="blockquote")
+            has_wrapper_only = False
+            max_depth = 0
+            for bq in blockquotes:
+                if not isinstance(bq, Tag):
+                    continue
+                direct_children = [
+                    child
+                    for child in bq.find_all(recursive=False)
+                    if isinstance(child, Tag)
+                ]
+                if (
+                    len(direct_children) == 1
+                    and getattr(direct_children[0], "name", None) == "blockquote"
+                ):
+                    has_wrapper_only = True
+                depth = (
+                    sum(
+                        1
+                        for parent in bq.parents
+                        if getattr(parent, "name", None) == "blockquote"
+                    )
+                    + 1
+                )
+                max_depth = max(max_depth, depth)
+
+            has_links = body.find(name="a") is not None
+            if (has_wrapper_only and max_depth >= 3) or (has_links and max_depth >= 3):
+                markup = cls._normalize_quote_newlines(markup)
+
         return (None, markup), message_links, time_mentions
+
+    @staticmethod
+    def _normalize_quote_newlines(markup: List[Any]) -> List[Any]:
+        def ends_with_newline(value: Any) -> bool:
+            if isinstance(value, str):
+                return value.endswith("\n")
+            if isinstance(value, list):
+                for item in reversed(value):
+                    if item == "":
+                        continue
+                    if isinstance(item, tuple) and len(item) == 2:
+                        _style, inner = item
+                        if ends_with_newline(inner):
+                            return True
+                        continue
+                    if isinstance(item, str):
+                        return item.endswith("\n")
+                    return False
+            return False
+
+        def normalize(items: List[Any], in_quote: bool) -> List[Any]:
+            out: List[Any] = []
+            previous_was_newline = False
+            for item in items:
+                if isinstance(item, tuple) and len(item) == 2:
+                    style, value = item
+                    if isinstance(value, list):
+                        value = normalize(value, in_quote or style == "msg_quote")
+
+                        # If we're already at a newline boundary and the nested
+                        # quote content begins with a newline, drop one to avoid
+                        # producing a blank line.
+                        if in_quote and style == "msg_quote" and previous_was_newline:
+                            if value and value[0] == "\n":
+                                value = value[1:]
+                            elif (
+                                value
+                                and isinstance(value[0], str)
+                                and value[0].startswith("\n")
+                            ):
+                                value[0] = value[0][1:]
+                    out.append((style, value))
+                    if in_quote:
+                        previous_was_newline = ends_with_newline(value)
+                    else:
+                        previous_was_newline = False
+                    continue
+
+                if in_quote and isinstance(item, str):
+                    if item == "":
+                        # Empty strings are common in soup2markup output and can
+                        # interfere with newline de-duplication.
+                        continue
+                    if item == "\n":
+                        if previous_was_newline:
+                            continue
+                        out.append(item)
+                        previous_was_newline = True
+                        continue
+
+                    normalized_item = item
+                    # Some BeautifulSoup nodes contain multiple newlines in one
+                    # string. For the targeted deep-quote edge cases, collapse
+                    # blank lines while preserving a single newline.
+                    if "\n\n" in normalized_item:
+                        while "\n\n" in normalized_item:
+                            normalized_item = normalized_item.replace("\n\n", "\n")
+
+                    out.append(normalized_item)
+                    previous_was_newline = ends_with_newline(normalized_item)
+                    continue
+
+                out.append(item)
+                previous_was_newline = in_quote and ends_with_newline(item)
+
+            return out
+
+        return normalize(markup, in_quote=False)
 
     @staticmethod
     def indent_quoted_content(soup: Any, padding_char: str) -> int:
@@ -911,41 +1025,123 @@ class MessageBox(urwid.Pile):
         <p>Boo</p>                      <p>▒ </p><p>Boo</p>
         </blockquote>                   </blockquote>
         """
-        pad_count = 1
         blockquote_list = soup.find_all("blockquote")
         bq_len = len(blockquote_list)
+
+        def is_wrapper_only(blockquote: Tag) -> bool:
+            direct_children = [
+                child
+                for child in blockquote.find_all(recursive=False)
+                if isinstance(child, Tag)
+            ]
+            return (
+                len(direct_children) == 1
+                and getattr(direct_children[0], "name", None) == "blockquote"
+            )
+
+        def quote_depth(blockquote: Tag) -> int:
+            ancestors: List[Tag] = [
+                parent
+                for parent in blockquote.parents
+                if getattr(parent, "name", None) == "blockquote"
+            ]
+            # BeautifulSoup yields parents from closest -> outermost; we want
+            # outermost -> closest for wrapper-run detection.
+            ancestors.reverse()
+
+            wrapper_runs = 0
+            previous_was_wrapper = False
+            non_wrapper = 0
+            for ancestor in ancestors:
+                wrapper = is_wrapper_only(ancestor)
+                if wrapper and not previous_was_wrapper:
+                    wrapper_runs += 1
+                if not wrapper:
+                    non_wrapper += 1
+                previous_was_wrapper = wrapper
+
+            # Count non-wrapper ancestors normally, but compress consecutive
+            # wrapper-only ancestors to a single indentation step.
+            return non_wrapper + wrapper_runs + 1
+
         for tag in blockquote_list:
+            depth = quote_depth(tag)
+            actual_padding = f"{padding_char} " * depth
+
+            has_nonwhitespace_prev_sibling = False
+            for prev in tag.previous_siblings:
+                if isinstance(prev, Tag):
+                    has_nonwhitespace_prev_sibling = True
+                    break
+                if isinstance(prev, NavigableString) and str(prev).strip():
+                    has_nonwhitespace_prev_sibling = True
+                    break
+
             child_list = tag.find_all(recursive=False)
-            child_block = tag.find_all("blockquote")
-            actual_padding = f"{padding_char} " * pad_count
-            if len(child_list) == 1:
-                pad_count -= 1
-                child_iterator = child_list
-            else:
-                if len(child_block) == 0:
-                    child_iterator = child_list
-                else:
-                    # If there is some text at the beginning of a
-                    # quote, we pad it separately.
-                    if child_list[0].name == "p":
+            direct_tags = [child for child in child_list if isinstance(child, Tag)]
+            direct_blockquotes = [
+                child for child in direct_tags if child.name == "blockquote"
+            ]
+
+            # When a quote contains nested quotes, we pad the first paragraph
+            # separately and then pad remaining siblings.
+            skip_first = False
+            if direct_blockquotes and direct_tags and direct_tags[0].name == "p":
+                # If this blockquote is preceded by other content, we need an
+                # explicit newline because soup2markup skips a fixed number of
+                # newlines when blockquotes exist.
+                new_tag = soup.new_tag("p")
+                new_tag.string = (
+                    f"\n{actual_padding}"
+                    if has_nonwhitespace_prev_sibling
+                    else actual_padding
+                )
+                direct_tags[0].insert_before(new_tag)
+                skip_first = True
+
+            # Padding before a nested blockquote renders the "blank marker" line in
+            # cases like quoted level 2-1-2, but should not affect the first nested
+            # blockquote, otherwise its padding concatenates into the first line.
+            pad_blockquote_children = len(direct_blockquotes) >= 2 or (
+                depth == 1 and has_nonwhitespace_prev_sibling
+            )
+
+            for idx, child in enumerate(direct_tags):
+                if skip_first and idx == 0:
+                    continue
+
+                if child.name == "blockquote":
+                    if pad_blockquote_children and idx != 0:
                         new_tag = soup.new_tag("p")
-                        new_tag.string = f"\n{actual_padding}"
-                        child_list[0].insert_before(new_tag)
-                    child_iterator = child_list[1:]
-            for child in child_iterator:
+                        # Keep this as a pure padding prefix; embedded newlines
+                        # interact badly with soup2markup's newline skipping.
+                        new_tag.string = actual_padding
+                        child.insert_before(new_tag)
+                    continue
+
                 new_tag = soup.new_tag("p")
                 new_tag.string = actual_padding
-                # If the quoted message is multi-line message
-                # we deconstruct it and pad it at break-points (<br/>)
+
+                # If the quoted message is multi-line, pad at <br/> breakpoints.
                 for br in child.find_all("br"):
                     next_s = br.next_sibling
-                    text = str(next_s.string).strip()
+                    if next_s is None:
+                        continue
+                    text = (
+                        str(next_s).strip()
+                        if isinstance(next_s, NavigableString)
+                        else str(
+                            getattr(next_s, "string", "") or next_s.get_text()
+                        ).strip()
+                    )
                     if text:
                         insert_tag = soup.new_tag("p")
-                        insert_tag.string = f"\n{padding_char} {text}"
+                        # New line + correct quote depth.
+                        insert_tag.string = f"\n{actual_padding}{text}"
                         next_s.replace_with(insert_tag)
+
                 child.insert_before(new_tag)
-            pad_count += 1
+
         return bq_len
 
     def selectable(self) -> bool:
