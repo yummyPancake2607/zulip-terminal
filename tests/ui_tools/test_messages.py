@@ -881,6 +881,220 @@ class TestMessageBox:
         assert "Salad" in msg_box.message["content"]
         assert "Pasta" in msg_box.message["content"]
 
+    def test_keypress_poll_widget_votes_and_unvotes(self, mocker):
+        self.model.stream_dict = {5: {"color": "#bd6"}}
+        self.model.poll_vote = mocker.Mock()
+
+        submessages = [
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps(
+                    {
+                        "widget_type": "poll",
+                        "extra_data": {"question": "Lunch?", "options": ["Yes", "No"]},
+                    }
+                ),
+            }
+        ]
+        message = {
+            "id": 99,
+            "type": "stream",
+            "display_recipient": "Verona",
+            "stream_id": 5,
+            "subject": "Test topic",
+            "flags": ["read"],
+            "is_me_message": False,
+            "content": "<p>original</p>",
+            "reactions": [],
+            "sender_full_name": "Alice",
+            "sender_email": "alice@zulip.com",
+            "sender_id": 1,
+            "timestamp": 1532103879,
+            "submessages": submessages,
+        }
+
+        msg_box = MessageBox(message, self.model, message)
+
+        assert msg_box.keypress((80,), "1") is None
+        self.model.poll_vote.assert_called_with(99, "canned,0", 1)
+
+        self.model.poll_vote.reset_mock()
+        assert msg_box.keypress((80,), "!") is None
+        self.model.poll_vote.assert_called_with(99, "canned,0", -1)
+
+    def test_keypress_todo_widget_toggles_task(self, mocker):
+        self.model.stream_dict = {5: {"color": "#bd6"}}
+        self.model.todotoggletask = mocker.Mock()
+
+        submessages = [
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps(
+                    {
+                        "widget_type": "todo",
+                        "extra_data": {
+                            "task_list_title": "Today",
+                            "tasks": [
+                                {"task": "Task A", "desc": ""},
+                                {"task": "Task B", "desc": ""},
+                            ],
+                        },
+                    }
+                ),
+            }
+        ]
+        message = {
+            "id": 100,
+            "type": "stream",
+            "display_recipient": "Verona",
+            "stream_id": 5,
+            "subject": "Test topic",
+            "flags": ["read"],
+            "is_me_message": False,
+            "content": "<p>original</p>",
+            "reactions": [],
+            "sender_full_name": "Alice",
+            "sender_email": "alice@zulip.com",
+            "sender_id": 1,
+            "timestamp": 1532103879,
+            "submessages": submessages,
+        }
+
+        msg_box = MessageBox(message, self.model, message)
+
+        assert msg_box.keypress((80,), "1") is None
+        self.model.todotoggletask.assert_called_with(100, "0,canned")
+
+    def test_keypress_todo_widget_rename_title_popup_and_submit(self, mocker):
+        self.model.stream_dict = {5: {"color": "#bd6"}}
+        self.model.todo_rename_title = mocker.Mock()
+
+        controller = mocker.MagicMock()
+        controller.loop = mocker.MagicMock()
+        self.model.controller = controller
+
+        submessages = [
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps(
+                    {
+                        "widget_type": "todo",
+                        "extra_data": {
+                            "task_list_title": "Today",
+                            "tasks": [{"task": "Task A", "desc": ""}],
+                        },
+                    }
+                ),
+            }
+        ]
+        message = {
+            "id": 101,
+            "type": "stream",
+            "display_recipient": "Verona",
+            "stream_id": 5,
+            "subject": "Test topic",
+            "flags": ["read"],
+            "is_me_message": False,
+            "content": "<p>original</p>",
+            "reactions": [],
+            "sender_full_name": "Alice",
+            "sender_email": "alice@zulip.com",
+            "sender_id": 1,
+            "timestamp": 1532103879,
+            "submessages": submessages,
+        }
+
+        msg_box = MessageBox(message, self.model, message)
+
+        with patch("zulipterminal.ui_tools.views.PopUpInputView") as PopUpInputView:
+            popup_obj = mocker.MagicMock()
+            PopUpInputView.return_value = popup_obj
+
+            assert msg_box.keypress((80,), "t") is None
+            assert controller.loop.widget is popup_obj
+
+            kwargs = PopUpInputView.call_args.kwargs
+            assert kwargs["prompt_text"] == "New title:"
+            assert kwargs["default_text"] == "Today"
+
+            kwargs["on_submit"]("New")
+
+        self.model.todo_rename_title.assert_called_once_with(
+            101, {"type": "new_task_list_title", "title": "New"}
+        )
+
+    def test_keypress_todo_widget_add_task_popup_and_submit(self, mocker):
+        self.model.stream_dict = {5: {"color": "#bd6"}}
+        self.model.todo_add_task = mocker.Mock()
+
+        controller = mocker.MagicMock()
+        controller.loop = mocker.MagicMock()
+        self.model.controller = controller
+
+        submessages = [
+            {
+                "msg_type": "widget",
+                "sender_id": 1,
+                "content": json.dumps(
+                    {
+                        "widget_type": "todo",
+                        "extra_data": {
+                            "task_list_title": "Today",
+                            "tasks": [
+                                {"task": "Task A", "desc": ""},
+                                {"task": "Task B", "desc": ""},
+                            ],
+                        },
+                    }
+                ),
+            }
+        ]
+        message = {
+            "id": 102,
+            "type": "stream",
+            "display_recipient": "Verona",
+            "stream_id": 5,
+            "subject": "Test topic",
+            "flags": ["read"],
+            "is_me_message": False,
+            "content": "<p>original</p>",
+            "reactions": [],
+            "sender_full_name": "Alice",
+            "sender_email": "alice@zulip.com",
+            "sender_id": 1,
+            "timestamp": 1532103879,
+            "submessages": submessages,
+        }
+
+        msg_box = MessageBox(message, self.model, message)
+
+        with patch("zulipterminal.ui_tools.views.PopUpInputView") as PopUpInputView:
+            popup_obj = mocker.MagicMock()
+            PopUpInputView.return_value = popup_obj
+
+            assert msg_box.keypress((80,), "a") is None
+            assert controller.loop.widget is popup_obj
+
+            kwargs = PopUpInputView.call_args.kwargs
+            assert kwargs["prompt_text"] == "New task:"
+            assert kwargs["default_text"] == ""
+
+            kwargs["on_submit"]("Task C")
+
+        self.model.todo_add_task.assert_called_once_with(
+            102,
+            {
+                "type": "new_task",
+                "key": 2,
+                "task": "Task C",
+                "desc": "",
+                "completed": False,
+            },
+        )
+
     @pytest.mark.parametrize(
         "message",
         [

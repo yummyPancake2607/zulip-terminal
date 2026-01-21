@@ -582,8 +582,10 @@ class Model:
 
         # Debug: Log what we're about to send
         self.controller.report_success(
-            f"DEBUG SENDING: POST /api/v1/submessage with content: "
-            f"{json.dumps(content)}"
+            [
+                f"DEBUG SENDING: POST /api/v1/submessage with content: "
+                f"{json.dumps(content)}"
+            ]
         )
 
         # Zulip REST endpoint:  POST /api/v1/submessage
@@ -596,12 +598,12 @@ class Model:
         # Debug: Log the response
         result = response.get("result", "NO RESULT")
         msg = response.get("msg", "NO MSG")
-        self.controller.report_success(f"DEBUG RESPONSE: {result} - {msg}")
+        self.controller.report_success([f"DEBUG RESPONSE: {result} - {msg}"])
 
         if response.get("result") != "success":
             msg = response.get("msg", "Unexpected error from the server")
             code = response.get("code", "?")
-            self.controller.report_error(f"Submessage error ({code}): {msg}")
+            self.controller.report_error([f"Submessage error ({code}): {msg}"])
             return False
 
         display_error_if_present(response, self.controller)
@@ -622,7 +624,9 @@ class Model:
         # optional: enforce "only my todo list"
         msg = self.index["messages"].get(message_id)
         if msg and msg.get("sender_id") != self.user_id:
-            self.controller.report_error("Only the creator can rename this to-do list.")
+            self.controller.report_error(
+                ["Only the creator can rename this to-do list."]
+            )
             return False
         return self._send_widget_submessage(message_id, content=payload)
 
@@ -630,7 +634,7 @@ class Model:
         msg = self.index["messages"].get(message_id)
         if msg and msg.get("sender_id") != self.user_id:
             self.controller.report_error(
-                "Only the creator can add tasks to this to-do list."
+                ["Only the creator can add tasks to this to-do list."]
             )
             return False
         return self._send_widget_submessage(message_id, content=payload)
@@ -642,7 +646,7 @@ class Model:
     def poll_vote(self, message_id: int, option_key: str, vote: int) -> bool:
         # vote must be +1 (vote) or -1 (unvote)
         if vote not in (1, -1):
-            self.controller.report_error("Invalid vote delta; must be 1 or -1.")
+            self.controller.report_error(["Invalid vote delta; must be 1 or -1."])
             return False
 
         payload = {

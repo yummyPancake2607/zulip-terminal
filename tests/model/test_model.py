@@ -3582,6 +3582,111 @@ class TestModel:
         assert send_submessage.call_count == 2
         model.controller.report_error.assert_called_once_with(["Failed to add task: a"])
 
+    def test__send_todo_setup_default_title(self, mocker, model):
+        calls = []
+
+        def record_call(message_id, *, content):
+            calls.append((message_id, content))
+            return True
+
+        mocker.patch.object(model, "_send_widget_submessage", side_effect=record_call)
+        model.controller.report_success = mocker.Mock()
+
+        result = model._send_todo_setup(3, title="", tasks=["a"])
+
+        assert result is True
+        assert calls[0][0] == 3
+        assert calls[0][1] == {"type": "new_task_list_title", "title": "Task list"}
+
+    def test__send_widget_submessage_success(self, mocker, model):
+        model.controller.report_success = mocker.Mock()
+        model.controller.report_error = mocker.Mock()
+        model.client.do_api_query.return_value = {"result": "success", "msg": "OK"}
+
+        result = model._send_widget_submessage(99, content={"widget_type": "todo"})
+
+        assert result is True
+        model.client.do_api_query.assert_called_once()
+        model.controller.report_error.assert_not_called()
+        assert model.controller.report_success.call_count == 2
+
+    def test__send_widget_submessage_failure(self, mocker, model):
+        model.controller.report_success = mocker.Mock()
+        model.controller.report_error = mocker.Mock()
+        model.client.do_api_query.return_value = {
+            "result": "error",
+            "msg": "Bad request",
+            "code": "BAD_REQUEST",
+        }
+
+        result = model._send_widget_submessage(99, content={"widget_type": "todo"})
+
+        assert result is False
+        model.controller.report_error.assert_called_once_with(
+            ["Submessage error (BAD_REQUEST): Bad request"]
+        )
+        # For error responses, we return early before display_error_if_present.
+        self.display_error_if_present.assert_not_called()
+
+    def test_todo_rename_title_denies_non_creator(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", return_value=True
+        )
+        message_id = 123
+        model.index["messages"][message_id] = {"sender_id": model.user_id + 1}
+
+        result = model.todo_rename_title(
+            message_id, payload={"type": "new_task_list_title", "title": "New"}
+        )
+
+        assert result is False
+        model.controller.report_error.assert_called_once_with(
+            ["Only the creator can rename this to-do list."]
+        )
+        send_submessage.assert_not_called()
+
+    def test_todo_add_task_denies_non_creator(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", return_value=True
+        )
+        message_id = 123
+        model.index["messages"][message_id] = {"sender_id": model.user_id + 1}
+
+        result = model.todo_add_task(
+            message_id,
+            payload={"type": "new_task", "key": 0, "task": "a", "desc": ""},
+        )
+
+        assert result is False
+        model.controller.report_error.assert_called_once_with(
+            ["Only the creator can add tasks to this to-do list."]
+        )
+        send_submessage.assert_not_called()
+
+    def test_poll_vote_invalid_delta(self, mocker, model):
+        model.controller.report_error = mocker.Mock()
+
+        result = model.poll_vote(99, "canned,0", vote=0)
+
+        assert result is False
+        model.controller.report_error.assert_called_once_with(
+            ["Invalid vote delta; must be 1 or -1."]
+        )
+
+    def test_todotoggletask_sends_strike_payload(self, mocker, model):
+        send_submessage = mocker.patch.object(
+            model, "_send_widget_submessage", return_value=True
+        )
+
+        result = model.todotoggletask(10, "0,canned")
+
+        assert result is True
+        send_submessage.assert_called_once_with(
+            10, content={"type": "strike", "key": "0,canned"}
+        )
+
     @pytest.fixture(
         params=[
             ("op", 32),  # At server feature level 32, event uses standard field

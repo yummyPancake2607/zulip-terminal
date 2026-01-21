@@ -62,6 +62,33 @@ from zulipterminal.widget import (
             ],
             "todo",
         ),
+        case(
+            [
+                {
+                    "id": 11901,
+                    "message_id": 1954464,
+                    "sender_id": 27294,
+                    "msg_type": "widget",
+                    "content": "not-json",
+                }
+            ],
+            "unknown",
+            id="invalid_json",
+        ),
+        case(
+            [
+                {
+                    "id": 11902,
+                    "message_id": 1954465,
+                    "sender_id": 27294,
+                    "msg_type": "widget",
+                    "content": {"widget_type": "poll"},
+                }
+            ],
+            "unknown",
+            id="non_string_content",
+        ),
+        case([], "unknown", id="empty_submessages"),
         case([{}], "unknown"),
     ],
 )
