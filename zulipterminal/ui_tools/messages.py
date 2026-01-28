@@ -1020,6 +1020,52 @@ class MessageBox(urwid.Pile):
                 self.model.controller.show_pop_up(popup, "area:msg")
                 return None
 
+            if key == "a":
+
+                def on_task_submit(task_text: str) -> None:
+                    if not task_text:
+                        return
+
+                    task, desc = task_text, ""
+                    if ":" in task_text:
+                        left, right = task_text.split(":", 1)
+                        task, desc = left.strip(), right.strip()
+                    if not task:
+                        return
+
+                    # Zulip validates that todo `key` is a reasonably-sized int.
+                    _, current_tasks = process_todo_widget(
+                        self.message.get("submessages", [])
+                    )
+                    max_key = -1
+                    for task_id in current_tasks:
+                        try:
+                            max_key = max(max_key, int(str(task_id).split(",", 1)[0]))
+                        except Exception:
+                            continue
+                    next_key = max_key + 1
+
+                    self.model.send_widget_submessage(
+                        self.message["id"],
+                        {
+                            "type": "new_task",
+                            "task": task,
+                            "desc": desc,
+                            "key": next_key,
+                            "completed": False,
+                        },
+                    )
+
+                popup = TodoTextInputPopup(
+                    self.model.controller,
+                    title="Add to-do",
+                    prompt="Task (optional: task: description):",
+                    on_submit=on_task_submit,
+                    footer_text="Enter to add • Esc to cancel",
+                )
+                self.model.controller.show_pop_up(popup, "area:msg")
+                return None
+
         if is_command_key("REPLY_MESSAGE", key):
             if self.message["type"] == "private":
                 self.model.controller.view.write_box.private_box_view(
