@@ -2,6 +2,7 @@
 UI to render a Zulip message for display, and respond contextually to actions
 """
 
+import re
 import typing
 from collections import defaultdict
 from datetime import date, datetime
@@ -965,6 +966,29 @@ class MessageBox(urwid.Pile):
         return super().mouse_event(size, event, button, col, row, focus)
 
     def keypress(self, size: urwid_Size, key: str) -> Optional[str]:
+        if (
+            self.message.get("submessages")
+            and find_widget_type(self.message.get("submessages", [])) == "todo"
+        ):
+            digit_key = None
+            if key:
+                m = re.search(r"([1-9])$", key.strip())
+                if m:
+                    digit_key = m.group(1)
+
+            if digit_key in {str(i) for i in range(1, 10)}:
+                _, tasks = process_todo_widget(self.message.get("submessages", []))
+                task_ids = list(tasks.keys())
+                idx = int(digit_key) - 1
+                if idx < len(task_ids):
+                    self.model.send_widget_submessage(
+                        self.message["id"],
+                        {"type": "strike", "key": task_ids[idx]},
+                    )
+                else:
+                    self.model.controller.report_error([" No such to-do item."])
+                return None
+
         if is_command_key("REPLY_MESSAGE", key):
             if self.message["type"] == "private":
                 self.model.controller.view.write_box.private_box_view(

@@ -1922,3 +1922,35 @@ class TestMessageBox:
             msg_box.keypress.assert_not_called()
         else:
             msg_box.keypress.assert_called_once_with(size, expected_keypress)
+
+    def test_todo_widget_strike_sends_submessage(self, mocker):
+        mocker.patch.object(MessageBox, "main_view")
+        self.model.send_widget_submessage = mocker.MagicMock(return_value=True)
+
+        message = dict(
+            id=100,
+            type="stream",
+            display_recipient="general",
+            stream_id=5,
+            subject="todo",
+            sender_id=42,
+            sender_email="foo@zulip.com",
+            sender_full_name="Foo",
+            content="<p>todo</p>",
+            submessages=[
+                {
+                    "msg_type": "widget",
+                    "sender_id": 42,
+                    "content": (
+                        '{"widget_type":"todo","extra_data":{"tasks":[{"task":"A"}]}}'
+                    ),
+                }
+            ],
+        )
+        msg_box = MessageBox(message, self.model, None)
+
+        msg_box.keypress((80, 24), "1")
+
+        self.model.send_widget_submessage.assert_called_once_with(
+            100, {"type": "strike", "key": "0,canned"}
+        )
