@@ -1888,21 +1888,132 @@ class Model:
         Handle change to submessages on a message (todo, poll etc.)
         """
         assert event["type"] == "submessage"
-        message_id = event["message_id"]
-        if message_id in self.index["messages"]:
-            message = self.index["messages"][message_id]
-            message["submessages"].append(
+
+        def canonicalize_widget_content(value: Any) -> str:
+            if isinstance(value, str):
+                try:
+                    loaded = json.loads(value)
+                except Exception:
+                    return value
+            elif isinstance(value, dict):
+                loaded = value
+            else:
+                loaded = value
+            try:
+                return json.dumps(loaded, sort_keys=True, separators=(",", ":"))
+            except Exception:
+                return str(value)
+
+        message_id = event.get("message_id")
+        if message_id is None or message_id not in self.index["messages"]:
+            return
+
+        msg_type = (
+            event.get("msg_type")
+            or event.get("msgtype")
+            or event.get("msgType")
+            or event.get("type")
+        )
+        sender_id = event.get("sender_id")
+        content_str = canonicalize_widget_content(event.get("content"))
+
+        message = self.index["messages"][message_id]
+        submessages = message.setdefault("submessages", [])
+
+        # If we already added a local optimistic submessage with identical content,
+        # drop it so we don't double-apply (especially important for todo strikes).
+        for i in range(len(submessages) - 1, -1, -1):
+            sub = submessages[i]
+            if not isinstance(sub, dict) or not sub.get("_local"):
+                continue
+            if sub.get("msg_type") != msg_type:
+                continue
+            if sender_id is not None and sub.get("sender_id") != sender_id:
+                continue
+            if canonicalize_widget_content(sub.get("content")) == content_str:
+                submessages.pop(i)
+                break
+
+        submessages.append(
+            {
+                "type": event.get("type"),
+                "msg_type": msg_type,
+                "message_id": message_id,
+                "submessage_id": event.get("submessage_id"),
+                "sender_id": sender_id,
+                "content": content_str,
+            }
+        )
+        self.index["messages"][message_id] = message
+        self._update_rendered_view(message_id)
+    
+    def send_widget_submessage(
+        self, message_id: int, widget_content: Dict[str, Any]
+    ) -> bool:
+        def canonicalize_widget_content(value: Any) -> str:
+            if isinstance(value, str):
+                try:
+                    loaded = json.loads(value)
+                except Exception:
+                    return value
+            elif isinstance(value, dict):
+                loaded = value
+            else:
+                loaded = value
+            try:
+                return json.dumps(loaded, sort_keys=True, separators=(",", ":"))
+            except Exception:
+                return str(value)
+
+        content_str = canonicalize_widget_content(widget_content)
+        request = {
+            "message_id": message_id,
+            "msg_type": "widget",
+            "content": content_str,
+        }
+        try:
+            # The canonical endpoint for sending widget submessages is:
+            #   POST /api/v1/submessage
+            # Older zulip-python versions expose this via do_api_query.
+            if hasattr(self.client, "do_api_query"):
+                response = self.client.do_api_query(
+                    request, "/api/v1/submessage", method="POST"
+                )
+            else:
+                # Fallback for newer client APIs.
+                response = self.client.call_endpoint(
+                    "submessage", method="POST", request=request
+                )
+        except Exception as e:
+            # Avoid silent failures in background threads.
+            self.controller.report_error([f" {e}"])
+            return False
+
+        if response.get("result") != "success":
+            msg = response.get("msg") or "Request failed."
+            code = response.get("code")
+            prefix = f"Submessage failed ({code})" if code else "Submessage failed"
+            self.controller.report_error([f" {prefix}: {msg}"])
+            return False
+
+        # Optimistically update local state so the UI updates immediately,
+        # even if the server event arrives later or is delayed.
+        if message_id in self.index.get("messages", {}):
+            msg = self.index["messages"][message_id]
+            msg.setdefault("submessages", []).append(
                 {
-                    "type": event["type"],
-                    "msg_type": event["msg_type"],
-                    "message_id": event["message_id"],
-                    "submessage_id": event["submessage_id"],
-                    "sender_id": event["sender_id"],
-                    "content": event["content"],
+                    "msg_type": "widget",
+                    "message_id": message_id,
+                    "sender_id": self.user_id,
+                    "content": content_str,
+                    "_local": True,
                 }
             )
-            self.index["messages"][message_id] = message
-            self._update_rendered_view(message_id)
+            self.index["messages"][message_id] = msg
+            if hasattr(self.controller, "view"):
+                self._update_rendered_view(message_id)
+
+        return True
 
     def _handle_update_message_flags_event(self, event: Event) -> None:
         """

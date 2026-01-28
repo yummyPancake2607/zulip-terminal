@@ -1,5 +1,6 @@
 from collections import OrderedDict, defaultdict
 from datetime import date
+import json
 from unittest.mock import patch
 
 import pytest
@@ -71,6 +72,82 @@ class TestMessageBox:
 
         with pytest.raises(RuntimeError):
             MessageBox(message, self.model, None)
+
+    def test_todo_keypress_digit_toggles_task(self, widget_size):
+        widget_content = {
+            "widget_type": "todo",
+            "extra_data": {
+                "task_list_title": "Task list",
+                "tasks": [{"task": "A", "desc": ""}, {"task": "B", "desc": ""}],
+            },
+        }
+        message = dict(
+            id=999,
+            type="stream",
+            display_recipient="PTEST",
+            stream_id=5,
+            subject="test",
+            sender_email="foo@zulip.com",
+            sender_id=1,
+            sender_full_name="Foo Foo",
+            timestamp=1,
+            flags=[],
+            content="",
+            is_me_message=False,
+            reactions=[],
+            submessages=[
+                {
+                    "msg_type": "widget",
+                    "sender_id": 1,
+                    "content": json.dumps(widget_content),
+                }
+            ],
+        )
+        self.model.user_id = 1
+        msg_box = MessageBox(message, self.model, None)
+        size = widget_size(msg_box)
+
+        msg_box.keypress(size, "1")
+
+        self.model.send_widget_submessage.assert_called_once_with(
+            999, {"type": "strike", "key": "0,canned"}
+        )
+
+    def test_todo_keypress_t_renames_only_if_author(self, widget_size):
+        widget_content = {
+            "widget_type": "todo",
+            "extra_data": {"task_list_title": "X", "tasks": []},
+        }
+        message = dict(
+            id=1000,
+            type="stream",
+            display_recipient="PTEST",
+            stream_id=5,
+            subject="test",
+            sender_email="foo@zulip.com",
+            sender_id=2,
+            sender_full_name="Other User",
+            timestamp=1,
+            flags=[],
+            content="",
+            is_me_message=False,
+            reactions=[],
+            submessages=[
+                {
+                    "msg_type": "widget",
+                    "sender_id": 2,
+                    "content": json.dumps(widget_content),
+                }
+            ],
+        )
+        self.model.user_id = 1
+        msg_box = MessageBox(message, self.model, None)
+        size = widget_size(msg_box)
+
+        msg_box.keypress(size, "t")
+
+        self.model.controller.report_error.assert_called_once()
+        self.model.controller.show_pop_up.assert_not_called()
 
     def test_private_message_to_self(self, mocker):
         message = dict(
@@ -1429,6 +1506,42 @@ class TestMessageBox:
                 )
             else:
                 report_error.assert_called_once_with([expect_footer_text[message_type]])
+
+    @pytest.mark.parametrize("key", keys_for_command("EDIT_MESSAGE"))
+    def test_keypress_EDIT_MESSAGE_rejected_for_todo_widget(self, widget_size, key):
+        widget_content = {
+            "widget_type": "todo",
+            "extra_data": {"task_list_title": "Task list", "tasks": []},
+        }
+        message = dict(
+            id=1001,
+            type="stream",
+            display_recipient="PTEST",
+            stream_id=5,
+            subject="test",
+            sender_email="foo@zulip.com",
+            sender_id=1,
+            sender_full_name="Foo Foo",
+            timestamp=45,
+            flags=[],
+            content="",
+            is_me_message=False,
+            reactions=[],
+            submessages=[
+                {
+                    "msg_type": "widget",
+                    "sender_id": 1,
+                    "content": json.dumps(widget_content),
+                }
+            ],
+        )
+        self.model.user_id = 1
+        msg_box = MessageBox(message, self.model, None)
+        size = widget_size(msg_box)
+
+        msg_box.keypress(size, key)
+
+        self.model.controller.report_error.assert_called_once()
 
     @pytest.mark.parametrize(
         "raw_html, expected_content",

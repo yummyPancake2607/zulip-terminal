@@ -3,24 +3,31 @@ Process widgets (submessages) like polls, todo lists, etc.
 """
 
 import json
-from typing import Dict, List, Tuple, Union
+from typing import Any, Dict, List, Tuple, Union
 
 
-Submessage = Dict[str, Union[int, str]]
+Submessage = Dict[str, Any]
+
+
+def _load_widget_content(content: Any) -> Any:
+    if isinstance(content, str):
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError:
+            return None
+    if isinstance(content, dict):
+        return content
+    return None
 
 
 def find_widget_type(submessages: List[Submessage]) -> str:
     if submessages and "content" in submessages[0]:
         content = submessages[0]["content"]
 
-        if isinstance(content, str):
-            try:
-                loaded_content = json.loads(content)
-                return loaded_content.get("widget_type", "unknown")
-            except json.JSONDecodeError:
-                return "unknown"
-        else:
-            return "unknown"
+        loaded_content = _load_widget_content(content)
+        if isinstance(loaded_content, dict):
+            return loaded_content.get("widget_type", "unknown")
+        return "unknown"
     else:
         return "unknown"
 
@@ -36,8 +43,10 @@ def process_todo_widget(
         sender_id = entry.get("sender_id")
         msg_type = entry.get("msg_type")
 
-        if msg_type == "widget" and isinstance(content, str):
-            widget = json.loads(content)
+        if msg_type == "widget":
+            widget = _load_widget_content(content)
+            if not isinstance(widget, dict):
+                continue
 
             if widget.get("widget_type") == "todo":
                 if "extra_data" in widget and widget["extra_data"] is not None:
@@ -61,7 +70,7 @@ def process_todo_widget(
                 tasks[task_id] = {
                     "task": widget["task"],
                     "desc": widget.get("desc", ""),
-                    "completed": False,
+                    "completed": bool(widget.get("completed", False)),
                 }
 
             elif widget.get("type") == "strike":
@@ -87,8 +96,10 @@ def process_poll_widget(
         sender_id = entry["sender_id"]
         msg_type = entry["msg_type"]
 
-        if msg_type == "widget" and isinstance(content, str):
-            widget = json.loads(content)
+        if msg_type == "widget":
+            widget = _load_widget_content(content)
+            if not isinstance(widget, dict):
+                continue
 
             if widget.get("widget_type") == "poll":
                 poll_question = widget["extra_data"]["question"]
