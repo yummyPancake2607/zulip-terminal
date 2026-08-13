@@ -1554,7 +1554,13 @@ class Model:
                         subscribers.extend(user_ids)
                     else:
                         for user_id in user_ids:
-                            subscribers.remove(user_id)
+                            # A user_id may not be present in subscribers
+                            # if we missed the corresponding peer_add
+                            # event, or due to some other timing/sync
+                            # issue with the server. Avoid raising
+                            # ValueError in that case.
+                            if user_id in subscribers:
+                                subscribers.remove(user_id)
 
     def _handle_typing_event(self, event: Event) -> None:
         """

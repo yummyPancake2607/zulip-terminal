@@ -4187,6 +4187,27 @@ class TestModel:
         new_subscribers = model.stream_dict[stream_ids[0]]["subscribers"]
         assert new_subscribers == expected_subscribers
 
+    def test__handle_subscription_event_peer_remove_user_not_subscribed(
+        self, model, mocker, stream_dict
+    ):
+        # Regression test for #1220: peer_remove for a user_id that is
+        # not present in subscribers (e.g. because we missed the
+        # corresponding peer_add event) should not raise ValueError.
+        event = {
+            "type": "subscription",
+            "op": "peer_remove",
+            "stream_ids": [2],
+            "user_ids": [999],  # not present in subscribers
+        }
+
+        model.stream_dict = stream_dict
+        model.server_feature_level = 35
+
+        model._handle_subscription_event(event)
+
+        new_subscribers = model.stream_dict[2]["subscribers"]
+        assert new_subscribers == [1001, 11, 12]
+
     # NOTE: This only applies to feature level 34/35+
     @pytest.mark.parametrize(
         "event, feature_level, expected_subscribers",
